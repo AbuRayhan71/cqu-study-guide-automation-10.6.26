@@ -10,9 +10,9 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.ai import analyze_document, ai_polish_document
+from app.ai import analyze_document
 from app.config import settings
-from app.docx_pipeline import GenerationMetadata, extract_docx, render_document, validate_output
+from app.docx_pipeline import GenerationMetadata, extract_docx, render_preserving_source_document, validate_output
 from app.schemas import JobRecord, JobStatus
 
 
@@ -173,10 +173,7 @@ def run_generation_job(
             applied = apply_accepted_corrections(structured, accepted_corrections)
             record.progress.append(f"validating: Applied {applied} accepted proofreading corrections.")
         record.add_progress(JobStatus.structuring, "Building structured JSON blocks.")
-        if accepted_corrections:
-            record.progress.append("structuring: Skipped automatic AI polish because manual corrections were selected.")
-        else:
-            structured = ai_polish_document(structured)
+        record.progress.append("structuring: Preserving source DOCX body; AI polish is review/apply-only.")
         record.add_progress(JobStatus.validating, "Checking structured blocks against extracted assets.")
         missing = [
             block.image_id
@@ -186,7 +183,7 @@ def run_generation_job(
         if missing:
             raise ValueError(f"Structured output referenced missing images: {', '.join(missing)}")
         record.add_progress(JobStatus.rendering, "Rendering into the CQU Word template.")
-        render_document(structured, template_path, output_path)
+        render_preserving_source_document(source_path, template_path, output_path, structured.metadata, accepted_corrections)
         record.add_progress(JobStatus.checking_output, "Validating generated DOCX.")
         validate_output(output_path, structured)
         record.add_progress(JobStatus.completed, "Study guide is ready to download.")
