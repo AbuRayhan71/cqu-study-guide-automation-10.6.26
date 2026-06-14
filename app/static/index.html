@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CQU Study Guide Automator</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo-mark"></div>
+        <div class="logo-text"><strong>CQUniversity</strong><span>AUSTRALIA</span></div>
+      </div>
+      <div class="divider"></div>
+      <h1>Study Guide Automator</h1>
+    </header>
+
+    <main class="page">
+      <section class="intro">
+        <h2>Generate a Branded Study Guide</h2>
+        <p>Upload your Word document, pick a template, polish it with AI, and download a CQU-branded <code>.docx</code>.</p>
+      </section>
+
+      <form id="generate-form" class="flow">
+        <section class="panel">
+          <div class="step"><span class="badge complete">1</span><div><h3>Upload your document</h3><p>Word file (.docx) you want to brand.</p></div></div>
+          <label class="upload-box" for="source_docx">
+            <span class="file-icon">DOCX</span>
+            <span><strong id="source-name">Choose a source document</strong><small id="source-size">Required .docx upload</small></span>
+            <button class="ghost" type="button">Replace</button>
+          </label>
+          <input id="source_docx" name="source_docx" type="file" accept=".docx" required />
+        </section>
+
+        <section class="panel">
+          <div class="step"><span class="badge complete">2</span><div><h3>Choose a template</h3><p>The visual identity that will be applied to your document.</p></div></div>
+          <div class="template-card selected">
+            <div class="preview">
+              <div class="preview-logo">CQUniversity<br />AUSTRALIA</div>
+              <div class="preview-lines"></div>
+              <div class="preview-title">LAWS11059</div>
+              <div class="preview-subtitle">STATUTORY INTERPRETATION<br />STUDY GUIDE | WEEK 1</div>
+              <div class="preview-footer">Study Guide</div>
+            </div>
+            <div class="template-meta"><strong>Study Guide</strong><span class="check">✓</span></div>
+          </div>
+          <label class="small-template">Optional template override <input id="template_docx" name="template_docx" type="file" accept=".docx" /></label>
+        </section>
+
+        <section class="panel">
+          <div class="step"><span class="badge complete">3</span><div><h3>Review &amp; polish (optional)</h3><p>Run an AI proofread and verify every hyperlink before you publish.</p></div></div>
+          <button class="analysis-run" type="button" id="run-analysis" disabled><span class="shield">♧</span>Run AI proofread &amp; link check</button>
+          <div class="analysis hidden" id="analysis"></div>
+          <div id="corrections-area" class="hidden">
+            <div class="review-row"><span class="warn">△</span><strong id="correction-count">Suggested corrections (0)</strong><button class="accent" id="apply-all" type="button" disabled>Apply all</button></div>
+            <div id="correction-list" class="stack"></div>
+          </div>
+          <div id="links-area" class="hidden">
+            <div class="review-row"><span class="link-mark">⌕</span><strong id="link-count">Hyperlinks (0)</strong></div>
+            <div id="link-list" class="stack"></div>
+          </div>
+          <button class="link-button hidden" type="button" id="rerun">Re-run analysis</button>
+        </section>
+
+        <section class="panel">
+          <div class="step"><span class="badge muted">4</span><div><h3>Name your file (optional)</h3><p>We'll build a clean filename for your download.</p></div></div>
+          <div class="fields">
+            <label>Unit Code<input name="unit_code" placeholder="LAWS13019" /></label>
+            <label>Year<input name="year" placeholder="2026" /></label>
+            <label>Term<input name="term" placeholder="T1" /></label>
+            <label>Week<input name="week_number" placeholder="1" /></label>
+            <label>Version<input name="version" placeholder="1.0" /></label>
+          </div>
+          <label class="wide-label">Unit Name<input name="unit_name" placeholder="Statutory Interpretation" /></label>
+          <label class="wide-label">Week Title<input name="week_title" placeholder="Introduction" /></label>
+          <p class="output">Output filename: <code id="output-name">source-document.docx</code></p>
+        </section>
+      </form>
+    </main>
+
+    <footer class="sticky">
+      <div><strong id="status-title">Ready when you are</strong><p id="status-text">Will save as <span id="footer-name">source-document.docx</span></p></div>
+      <button id="submit" class="primary" form="generate-form" type="submit">⇩ Generate &amp; download</button>
+    </footer>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
