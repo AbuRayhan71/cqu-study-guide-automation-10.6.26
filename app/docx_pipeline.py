@@ -75,6 +75,11 @@ NAMESPACES = {
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
 
+DOCUMENT_RELATIONSHIP_TYPES = {
+    "footnotes.xml": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes",
+    "endnotes.xml": "http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes",
+}
+
 
 def iter_block_items(parent: DocumentObject) -> Iterable[Paragraph | Table]:
     body = parent.element.body
@@ -175,6 +180,7 @@ def render_preserving_source_document(
         copy_package_parts(source_dir, base_dir)
         rel_map = merge_document_relationships(source_dir, base_dir)
         replace_template_body_with_source(base_dir, source_dir, accepted_corrections or [], rel_map)
+        prune_unused_styles(base_dir)
         zip_docx(base_dir, output_path)
         Document(output_path)
 
@@ -397,11 +403,67 @@ def validate_output(path: Path, structured: StructuredDocument) -> None:
     template_images = 4
     if expected_images and actual_images < template_images + expected_images:
         raise ValueError("One or more source images were not present in output.")
+    missing_notes = missing_note_references(path)
+    if missing_notes:
+        raise ValueError(f"Missing note definitions in output: {', '.join(missing_notes)}")
+    style_issues = invalid_style_references(path)
+    if style_issues:
+        raise ValueError(f"Invalid style references in output: {', '.join(style_issues)}")
 
 
 def count_docx_media(path: Path) -> int:
     with zipfile.ZipFile(path) as archive:
         return len([name for name in archive.namelist() if name.startswith("word/media/")])
+
+
+def missing_note_references(path: Path) -> list[str]:
+    missing: list[str] = []
+    with zipfile.ZipFile(path) as archive:
+        document_root = etree.fromstring(archive.read("word/document.xml"))
+        for note_type, part_name in (("footnote", "word/footnotes.xml"), ("endnote", "word/endnotes.xml")):
+            references = {
+                node.get(qn("w:id"))
+                for node in document_root.xpath(f".//w:{note_type}Reference", namespaces=NAMESPACES)
+            }
+            references.discard(None)
+            if not references:
+                continue
+            if part_name not in archive.namelist():
+                missing.extend(f"{note_type}:{note_id}" for note_id in sorted(references))
+                continue
+            notes_root = etree.fromstring(archive.read(part_name))
+            definitions = {
+                node.get(qn("w:id"))
+                for node in notes_root.xpath(f".//w:{note_type}", namespaces=NAMESPACES)
+            }
+            missing.extend(f"{note_type}:{note_id}" for note_id in sorted(references - definitions))
+    return missing
+
+
+def invalid_style_references(path: Path) -> list[str]:
+    with zipfile.ZipFile(path) as archive:
+        styles_root = etree.fromstring(archive.read("word/styles.xml"))
+        defined = {
+            style.get(qn("w:styleId"))
+            for style in styles_root.findall("w:style", namespaces=NAMESPACES)
+            if style.get(qn("w:styleId"))
+        }
+        issues = set()
+        for name in archive.namelist():
+            if not name.startswith("word/") or not name.endswith(".xml") or name == "word/styles.xml":
+                continue
+            root = etree.fromstring(archive.read(name))
+            for tag in ("w:pStyle", "w:rStyle", "w:tblStyle"):
+                for node in root.findall(f".//{tag}", namespaces=NAMESPACES):
+                    style_id = node.get(qn("w:val"))
+                    if style_id and style_id not in defined:
+                        issues.add(f"{name}:{style_id}")
+        for tag in ("w:basedOn", "w:link", "w:next"):
+            for node in styles_root.findall(f".//{tag}", namespaces=NAMESPACES):
+                style_id = node.get(qn("w:val"))
+                if style_id and style_id not in defined:
+                    issues.add(f"styles.xml:{style_id}")
+        return sorted(issues)
 
 
 def unzip_docx(path: Path, destination: Path) -> None:
@@ -427,6 +489,8 @@ def write_xml(tree: etree._ElementTree, path: Path) -> None:
 
 def copy_package_parts(source_dir: Path, base_dir: Path) -> None:
     copy_if_exists(source_dir / "word" / "numbering.xml", base_dir / "word" / "numbering.xml")
+    copy_word_part_with_relationships(source_dir, base_dir, "footnotes.xml")
+    copy_word_part_with_relationships(source_dir, base_dir, "endnotes.xml")
     merge_missing_styles(source_dir / "word" / "styles.xml", base_dir / "word" / "styles.xml")
     merge_content_types(source_dir / "[Content_Types].xml", base_dir / "[Content_Types].xml")
 
@@ -448,6 +512,45 @@ def copy_if_exists(source: Path, destination: Path) -> None:
         shutil.copy2(source, destination)
 
 
+def copy_word_part_with_relationships(source_dir: Path, base_dir: Path, part_name: str) -> None:
+    source_part = source_dir / "word" / part_name
+    if not source_part.exists():
+        return
+    copy_if_exists(source_part, base_dir / "word" / part_name)
+    relationship_type = DOCUMENT_RELATIONSHIP_TYPES.get(part_name)
+    if relationship_type:
+        ensure_document_relationship(base_dir, relationship_type, part_name)
+
+    source_rels = source_dir / "word" / "_rels" / f"{part_name}.rels"
+    if not source_rels.exists():
+        return
+
+    rels_tree = parse_xml(source_rels)
+    for rel in rels_tree.getroot():
+        target = rel.get("Target")
+        mode = rel.get("TargetMode")
+        if target and mode != "External":
+            rel.set("Target", copy_related_part(source_dir, base_dir, target))
+    write_xml(rels_tree, base_dir / "word" / "_rels" / f"{part_name}.rels")
+
+
+def ensure_document_relationship(base_dir: Path, relationship_type: str, target: str) -> None:
+    rels_path = base_dir / "word" / "_rels" / "document.xml.rels"
+    rels_tree = parse_xml(rels_path)
+    root = rels_tree.getroot()
+    for rel in root:
+        if rel.get("Type") == relationship_type:
+            rel.set("Target", target)
+            write_xml(rels_tree, rels_path)
+            return
+    existing_ids = {rel.get("Id") for rel in root}
+    relationship = etree.SubElement(root, f"{{{NAMESPACES['rel']}}}Relationship")
+    relationship.set("Id", f"rId{next_relationship_number(existing_ids)}")
+    relationship.set("Type", relationship_type)
+    relationship.set("Target", target)
+    write_xml(rels_tree, rels_path)
+
+
 def merge_missing_styles(source_styles: Path, base_styles: Path) -> None:
     if not source_styles.exists() or not base_styles.exists():
         return
@@ -464,6 +567,68 @@ def merge_missing_styles(source_styles: Path, base_styles: Path) -> None:
             base_root.append(copy.deepcopy(style))
             existing[style_id] = style
     write_xml(base_tree, base_styles)
+
+
+def prune_unused_styles(base_dir: Path) -> None:
+    styles_path = base_dir / "word" / "styles.xml"
+    if not styles_path.exists():
+        return
+    styles_tree = parse_xml(styles_path)
+    styles_root = styles_tree.getroot()
+    used_style_ids = collect_used_style_ids(base_dir)
+    style_nodes = {
+        style.get(qn("w:styleId")): style
+        for style in styles_root.findall("w:style", namespaces=NAMESPACES)
+        if style.get(qn("w:styleId"))
+    }
+    for style_id, style in style_nodes.items():
+        if is_builtin_template_style(style):
+            used_style_ids.add(style_id)
+
+    changed = True
+    while changed:
+        changed = False
+        for style_id in list(used_style_ids):
+            style = style_nodes.get(style_id)
+            if style is None:
+                continue
+            for tag in ("w:basedOn", "w:link", "w:next"):
+                related = style.find(tag, namespaces=NAMESPACES)
+                related_id = related.get(qn("w:val")) if related is not None else None
+                if related_id and related_id not in used_style_ids:
+                    used_style_ids.add(related_id)
+                    changed = True
+
+    for style_id, style in list(style_nodes.items()):
+        if style_id in used_style_ids:
+            continue
+        styles_root.remove(style)
+    write_xml(styles_tree, styles_path)
+
+
+def collect_used_style_ids(base_dir: Path) -> set[str]:
+    used: set[str] = set()
+    for path in (base_dir / "word").glob("*.xml"):
+        if path.name == "styles.xml":
+            continue
+        root = parse_xml(path).getroot()
+        for tag in ("w:pStyle", "w:rStyle", "w:tblStyle"):
+            for node in root.findall(f".//{tag}", namespaces=NAMESPACES):
+                style_id = node.get(qn("w:val"))
+                if style_id:
+                    used.add(style_id)
+    return used
+
+
+def is_builtin_template_style(style: etree._Element) -> bool:
+    style_id = style.get(qn("w:styleId")) or ""
+    custom = style.get(qn("w:customStyle"))
+    name = style.find("w:name", namespaces=NAMESPACES)
+    if custom == "1":
+        return False
+    if name is None:
+        return False
+    return bool(style_id)
 
 
 def merge_content_types(source_types: Path, base_types: Path) -> None:
