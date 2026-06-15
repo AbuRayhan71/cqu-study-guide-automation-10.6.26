@@ -390,6 +390,21 @@ button {
   font-weight: 800;
 }
 
+.link-status.ok {
+  color: #17472e;
+  background: #e4f5df;
+}
+
+.link-status.broken {
+  color: #7b231f;
+  background: #fbe5e2;
+}
+
+.link-status.needs_review {
+  color: #6a430b;
+  background: #fff1d6;
+}
+
 .fields {
   display: grid;
   grid-template-columns: repeat(5, 1fr);

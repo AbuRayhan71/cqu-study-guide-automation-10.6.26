@@ -88,7 +88,7 @@ form.addEventListener("submit", async (event) => {
   data.set("accepted_corrections", JSON.stringify(appliedCorrections()));
 
   try {
-    const start = await fetch("/generate", { method: "POST", body: data });
+    const start = await fetchWithRetry("/generate", { method: "POST", body: data });
     if (!start.ok) throw new Error(await start.text());
     const job = await start.json();
     await poll(job.job_id);
@@ -122,6 +122,69 @@ async function poll(jobId) {
   }, 900);
 }
 
+async function fetchWithRetry(url, options = {}, attempts = 2) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fetch(url, options);
+    } catch (error) {
+      lastError = error;
+      await delay(350);
+    }
+  }
+  throw lastError;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function downloadJob(jobId) {
+  const link = document.createElement("a");
+  link.href = `/download/${jobId}`;
+  link.download = "";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+async function poll(jobId) {
+  return new Promise((resolve, reject) => {
+    const timer = setInterval(async () => {
+      let job;
+      try {
+        const response = await fetchWithRetry(`/jobs/${jobId}`);
+        if (!response.ok) throw new Error(await response.text());
+        job = await response.json();
+      } catch (error) {
+        clearInterval(timer);
+        submit.disabled = false;
+        submit.textContent = "Generate & download";
+        reject(error);
+        return;
+      }
+
+      statusTitle.textContent = job.status.replaceAll("_", " ");
+      statusText.textContent = job.error || job.message || "Working.";
+      if (job.status === "completed") {
+        clearInterval(timer);
+        downloadJob(jobId);
+        submit.disabled = false;
+        submit.textContent = "Generate & download";
+        statusTitle.textContent = "Download started";
+        statusText.textContent = `Saved as ${job.output_filename}`;
+        resolve(job);
+      }
+      if (job.status === "failed") {
+        clearInterval(timer);
+        submit.disabled = false;
+        submit.textContent = "Generate & download";
+        reject(new Error(job.error || "Generation failed."));
+      }
+    }, 900);
+  });
+}
+
 refreshFilename();
 
 function resetAnalysis() {
@@ -145,7 +208,7 @@ async function runAnalysis() {
   rerunButton.disabled = true;
   runAnalysisButton.textContent = "Analyzing...";
   analysisBox.classList.remove("hidden");
-  analysisBox.textContent = "Checking grammar, consistency, and hyperlinks with Groq.";
+  analysisBox.textContent = "Checking grammar, consistency, and hyperlinks.";
   statusTitle.textContent = "Analyzing";
   statusText.textContent = "Running AI proofread and link check.";
 
@@ -158,7 +221,7 @@ async function runAnalysis() {
     latestAnalysis = await response.json();
     renderAnalysis(latestAnalysis);
     statusTitle.textContent = "Analysis complete";
-    statusText.textContent = `${latestAnalysis.corrections.length} corrections, ${latestAnalysis.hyperlinks.length} hyperlinks.`;
+    statusText.textContent = analysisStatusText(latestAnalysis);
   } catch (error) {
     analysisBox.textContent = `Analysis failed: ${friendlyError(error.message)}`;
     statusTitle.textContent = "Analysis failed";
@@ -262,11 +325,35 @@ function linkCard(link) {
   label.textContent = link.text || link.url;
   const url = document.createElement("small");
   url.textContent = link.url;
+  const detail = document.createElement("small");
+  detail.textContent = link.detail || "";
   const status = document.createElement("span");
-  status.className = "pill";
-  status.textContent = link.status || "present";
-  card.append(label, url, status);
+  const statusName = link.status || "needs_review";
+  status.className = `pill link-status ${statusName}`;
+  status.textContent = statusLabel(statusName);
+  const text = document.createElement("div");
+  text.append(label, url);
+  if (detail.textContent) text.append(detail);
+  card.append(text, status);
   return card;
+}
+
+function analysisStatusText(result) {
+  const corrections = result.corrections?.length || 0;
+  const links = result.hyperlinks || [];
+  const broken = links.filter((link) => link.status === "broken").length;
+  const review = links.filter((link) => link.status === "needs_review").length;
+  if (broken || review) {
+    return `${corrections} corrections, ${links.length} hyperlinks, ${broken} broken, ${review} need review.`;
+  }
+  return `${corrections} corrections, ${links.length} hyperlinks checked.`;
+}
+
+function statusLabel(status) {
+  if (status === "ok") return "OK";
+  if (status === "broken") return "Broken";
+  if (status === "needs_review") return "Review";
+  return status;
 }
 
 function emptyLine(text) {

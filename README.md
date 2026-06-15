@@ -9,6 +9,7 @@ DOCX-to-DOCX automation pipeline for turning uploaded study guide documents into
   - `GET /jobs/{job_id}`
   - `GET /download/{job_id}`
 - Static upload UI at `/`
+- Hyperlink analysis that checks HTTP/HTTPS links and flags broken or manually reviewed URLs
 - Local DOCX pipeline:
   - extracts headings, paragraphs, lists, tables, and embedded images
   - reinserts original image binaries into the final DOCX

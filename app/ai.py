@@ -54,7 +54,9 @@ def analyze_document(document: StructuredDocument, hyperlinks: list[dict[str, st
         return fallback
     content = response["choices"][0]["message"]["content"]
     parsed = json.loads(content)
-    return normalize_analysis(parsed, fallback)
+    normalized = normalize_analysis(parsed, fallback)
+    normalized["hyperlinks"] = fallback["hyperlinks"]
+    return normalized
 
 
 def ai_polish_document(document: StructuredDocument) -> StructuredDocument:
@@ -187,7 +189,7 @@ def to_analysis_payload(document: StructuredDocument, hyperlinks: list[dict[str,
                     "severity": "minor|moderate|important",
                 }
             ],
-            "hyperlinks": [{"text": "string", "url": "string", "status": "present|needs_review"}],
+            "hyperlinks": [{"text": "string", "url": "string", "status": "ok|broken|needs_review"}],
             "source_confidence": "high|medium|low",
             "warnings": ["string"],
         },
@@ -244,7 +246,9 @@ def normalize_hyperlinks(values: list[Any]) -> list[dict[str, str]]:
             {
                 "text": clean_ai_string(item.get("text")) or url,
                 "url": url,
-                "status": clean_ai_string(item.get("status")) or "present",
+                "status": clean_ai_string(item.get("status")) or "needs_review",
+                "detail": clean_ai_string(item.get("detail")),
+                "http_status": clean_ai_string(item.get("http_status")),
             }
         )
     return normalized

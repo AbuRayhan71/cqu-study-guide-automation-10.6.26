@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.ai import analyze_document
 from app.config import settings
 from app.docx_pipeline import GenerationMetadata, extract_docx, render_preserving_source_document, validate_output
+from app.link_checker import check_hyperlinks, extract_hyperlinks
 from app.schemas import JobRecord, JobStatus
 
 
@@ -123,7 +124,7 @@ async def analyze(
         term=term.strip(),
     )
     structured = extract_docx(source_path, metadata)
-    hyperlinks = extract_hyperlinks(source_path)
+    hyperlinks = check_hyperlinks(extract_hyperlinks(source_path))
     result = analyze_document(structured, hyperlinks)
     result["analysis_id"] = analysis_id
     return result
@@ -214,18 +215,6 @@ def safe_filename(filename: str) -> str:
 def slug(value: str) -> str:
     value = value.strip().replace(".", "-")
     return re.sub(r"[^A-Za-z0-9-]+", "-", value).strip("-").lower()
-
-
-def extract_hyperlinks(path: Path) -> list[dict[str, str]]:
-    from docx import Document
-
-    document = Document(path)
-    links: list[dict[str, str]] = []
-    for rel in document.part.rels.values():
-        if "hyperlink" not in rel.reltype:
-            continue
-        links.append({"text": rel.target_ref, "url": rel.target_ref, "status": "present"})
-    return links
 
 
 def parse_accepted_corrections(raw: str) -> list[dict[str, str]]:
