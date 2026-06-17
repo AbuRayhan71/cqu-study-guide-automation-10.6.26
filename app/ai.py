@@ -21,39 +21,17 @@ def analyze_document(document: StructuredDocument, hyperlinks: list[dict[str, st
     fallback = deterministic_analysis(document, hyperlinks)
     if not settings.enable_ai_polish:
         return fallback
-    if settings.ai_provider != "groq":
-        raise AiNotConfiguredError(f"Unsupported AI_PROVIDER={settings.ai_provider!r} for analysis.")
-    if not settings.groq_api_key:
-        raise AiNotConfiguredError("Groq analysis is enabled but GROQ_API_KEY is missing.")
-
-    payload = {
-        "model": settings.groq_model,
-        "temperature": 0.1,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a conservative proofreading assistant for university study guides. "
-                    "Return only valid JSON. Identify clear grammar, punctuation, spelling, consistency, and hyperlink issues. "
-                    "Do not invent dates, readings, case names, legislation, URLs, assessments, marks, week numbers, or facts. "
-                    "Suggestions must be small text replacements copied from the source where possible."
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(to_analysis_payload(document, hyperlinks), ensure_ascii=True),
-            },
-        ],
-    }
     try:
-        response = post_groq_chat_completion(payload)
+        if settings.ai_provider == "groq":
+            parsed = groq_analyze_document(document, hyperlinks)
+        elif settings.ai_provider == "google":
+            parsed = google_analyze_document(document, hyperlinks)
+        else:
+            raise AiNotConfiguredError(f"Unsupported AI_PROVIDER={settings.ai_provider!r} for analysis.")
     except AiResponseError as exc:
         fallback["warnings"].append(str(exc))
-        fallback["summary"] = "Local checks completed, but Groq analysis could not run."
+        fallback["summary"] = f"Local checks completed, but {settings.ai_provider} analysis could not run."
         return fallback
-    content = response["choices"][0]["message"]["content"]
-    parsed = json.loads(content)
     normalized = normalize_analysis(parsed, fallback)
     normalized["hyperlinks"] = fallback["hyperlinks"]
     return normalized
@@ -67,9 +45,52 @@ def ai_polish_document(document: StructuredDocument) -> StructuredDocument:
             return groq_polish_document(document)
         except AiResponseError:
             return document
+    if settings.ai_provider == "google":
+        try:
+            return google_polish_document(document)
+        except AiResponseError:
+            return document
     if settings.ai_provider == "azure":
-        raise AiNotConfiguredError("Azure OpenAI is not wired for this MVP. Set AI_PROVIDER=groq.")
+        raise AiNotConfiguredError("Azure OpenAI is not wired for this MVP. Set AI_PROVIDER=groq or google.")
     raise AiNotConfiguredError(f"Unsupported AI_PROVIDER={settings.ai_provider!r}.")
+
+
+def analysis_system_instruction() -> str:
+    return (
+        "You are a conservative proofreading assistant for university study guides. "
+        "Return only valid JSON. Identify clear grammar, punctuation, spelling, consistency, and hyperlink issues. "
+        "Do not invent dates, readings, case names, legislation, URLs, assessments, marks, week numbers, or facts. "
+        "Suggestions must be small text replacements copied from the source where possible."
+    )
+
+
+def polish_system_instruction() -> str:
+    return (
+        "You are a conservative study guide editor. Return only valid JSON. "
+        "You may correct grammar and tidy headings, paragraphs, bullets, numbered lists, and captions. "
+        "Do not invent facts, dates, readings, URLs, legislation, case names, assessment details, or week numbers. "
+        "Do not alter table cells except for whitespace cleanup. Do not add, remove, rename, or reorder image IDs."
+    )
+
+
+def groq_analyze_document(document: StructuredDocument, hyperlinks: list[dict[str, str]]) -> dict[str, Any]:
+    if not settings.groq_api_key:
+        raise AiNotConfiguredError("Groq analysis is enabled but GROQ_API_KEY is missing.")
+
+    payload = {
+        "model": settings.groq_model,
+        "temperature": 0.1,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": analysis_system_instruction()},
+            {
+                "role": "user",
+                "content": json.dumps(to_analysis_payload(document, hyperlinks), ensure_ascii=True),
+            },
+        ],
+    }
+    response = post_groq_chat_completion(payload)
+    return json.loads(response["choices"][0]["message"]["content"])
 
 
 def groq_polish_document(document: StructuredDocument) -> StructuredDocument:
@@ -81,15 +102,7 @@ def groq_polish_document(document: StructuredDocument) -> StructuredDocument:
         "temperature": 0.1,
         "response_format": {"type": "json_object"},
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a conservative study guide editor. Return only valid JSON. "
-                    "You may correct grammar and tidy headings, paragraphs, bullets, numbered lists, and captions. "
-                    "Do not invent facts, dates, readings, URLs, legislation, case names, assessment details, or week numbers. "
-                    "Do not alter table cells except for whitespace cleanup. Do not add, remove, rename, or reorder image IDs."
-                ),
-            },
+            {"role": "system", "content": polish_system_instruction()},
             {
                 "role": "user",
                 "content": json.dumps(to_ai_payload(document), ensure_ascii=True),
@@ -100,6 +113,72 @@ def groq_polish_document(document: StructuredDocument) -> StructuredDocument:
     content = response["choices"][0]["message"]["content"]
     parsed = json.loads(content)
     return from_ai_payload(parsed, document)
+
+
+def google_analyze_document(document: StructuredDocument, hyperlinks: list[dict[str, str]]) -> dict[str, Any]:
+    if not settings.google_api_key:
+        raise AiNotConfiguredError("Google analysis is enabled but GOOGLE_API_KEY is missing.")
+    response = post_google_generate_content(
+        analysis_system_instruction(),
+        json.dumps(to_analysis_payload(document, hyperlinks), ensure_ascii=True),
+    )
+    return json.loads(extract_google_text(response))
+
+
+def google_polish_document(document: StructuredDocument) -> StructuredDocument:
+    if not settings.google_api_key:
+        raise AiNotConfiguredError("Google is enabled but GOOGLE_API_KEY is missing.")
+    response = post_google_generate_content(
+        polish_system_instruction(),
+        json.dumps(to_ai_payload(document), ensure_ascii=True),
+    )
+    return from_ai_payload(json.loads(extract_google_text(response)), document)
+
+
+def post_google_generate_content(system_instruction: str, user_content: str) -> dict[str, Any]:
+    body = json.dumps(
+        {
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
+            "contents": [{"role": "user", "parts": [{"text": user_content}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+            },
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{settings.google_api_base.rstrip('/')}/models/{settings.google_model}:generateContent",
+        data=body,
+        method="POST",
+        headers={
+            "x-goog-api-key": settings.google_api_key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "cqu-study-guide-automator/0.1",
+        },
+    )
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=settings.google_timeout_seconds) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise AiResponseError(f"Google request failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise AiResponseError(f"Google request failed: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise AiResponseError("Google request timed out.") from exc
+
+
+def extract_google_text(response: dict[str, Any]) -> str:
+    candidates = response.get("candidates")
+    if not candidates:
+        raise AiResponseError("Google returned no candidates.")
+    parts = candidates[0].get("content", {}).get("parts", [])
+    text = "".join(str(part.get("text", "")) for part in parts).strip()
+    if not text:
+        raise AiResponseError("Google returned an empty response.")
+    return text
 
 
 def post_groq_chat_completion(payload: dict[str, Any]) -> dict[str, Any]:
@@ -307,7 +386,7 @@ def block_to_dict(block: ContentBlock) -> dict[str, Any]:
 def from_ai_payload(payload: dict[str, Any], original: StructuredDocument) -> StructuredDocument:
     blocks = [block_from_dict(item) for item in payload.get("body_blocks", [])]
     if not blocks:
-        raise AiResponseError("Groq returned no body_blocks.")
+        raise AiResponseError("AI provider returned no body_blocks.")
     validate_ai_blocks(blocks, original)
     metadata = original.metadata
     metadata.unit_code = clean_ai_string(payload.get("unit_code")) or metadata.unit_code
@@ -338,15 +417,15 @@ def validate_ai_blocks(blocks: list[ContentBlock], original: StructuredDocument)
     original_image_ids = [block.image_id for block in original.body_blocks if block.type == "image"]
     returned_image_ids = [block.image_id for block in blocks if block.type == "image"]
     if returned_image_ids != original_image_ids:
-        raise AiResponseError("Groq response changed image IDs or image order.")
+        raise AiResponseError("AI provider response changed image IDs or image order.")
 
     original_tables = [block.rows for block in original.body_blocks if block.type == "table"]
     returned_tables = [block.rows for block in blocks if block.type == "table"]
     if len(returned_tables) != len(original_tables):
-        raise AiResponseError("Groq response changed the number of tables.")
+        raise AiResponseError("AI provider response changed the number of tables.")
     for original_rows, returned_rows in zip(original_tables, returned_tables, strict=True):
         if table_shape(original_rows) != table_shape(returned_rows):
-            raise AiResponseError("Groq response changed a table shape.")
+            raise AiResponseError("AI provider response changed a table shape.")
 
 
 def table_shape(rows: list[list[str]]) -> list[int]:

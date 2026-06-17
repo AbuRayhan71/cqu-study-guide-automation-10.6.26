@@ -39,14 +39,14 @@ python main.py source.docx app/templates/CQU_study_guide_template.docx output.do
   --version 1.0
 ```
 
-## Groq configuration
+## AI configuration
 
-The MVP runs without AI by default. For temporary Groq testing, set:
+The MVP runs without AI by default. For Google Gemini testing, set:
 
 ```bash
-AI_PROVIDER=groq
-GROQ_API_KEY=your_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
+AI_PROVIDER=google
+GOOGLE_API_KEY=your_key_here
+GOOGLE_MODEL=gemini-2.5-flash
 ENABLE_AI_POLISH=true
 ```
 
